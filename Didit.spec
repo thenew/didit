@@ -47,5 +47,5 @@ app = BUNDLE(
     coll,
     name='Didit.app',
     icon='icon.icns',
-    bundle_identifier=None,
+    bundle_identifier='local.didit.app',
 )

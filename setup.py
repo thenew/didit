@@ -10,9 +10,9 @@ OPTIONS = {
     "packages": ["webview"],
     "resources": ["pngquant"],  # copied to Contents/Resources/pngquant
     "plist": {
-        "CFBundleName": "PNG Quant Preview",
-        "CFBundleDisplayName": "PNG Quant Preview",
-        "CFBundleIdentifier": "local.pngquant.preview",
+        "CFBundleName": "Didit",
+        "CFBundleDisplayName": "Didit",
+        "CFBundleIdentifier": "local.didit.app",
         "CFBundleShortVersionString": "1.0",
         "NSHighResolutionCapable": True,
         "CFBundleDocumentTypes": [{

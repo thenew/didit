@@ -1,17 +1,21 @@
-# PNG Quant Preview
+# Didit
 
 A native macOS desktop application for previewing PNG image compression using [pngquant](https://pngquant.org/). It provides a visual interface to see how different color quantization settings affect your images before saving them.
 
+Didit allows you to drag & drop multiple images, preview different compression levels, and download optimized versions.
+
 ## Features
 
-- Drag & drop or open any image file (PNG, JPEG, etc.)
-- Preview 10 different color quantization levels at once
+- **Multi-file support**: Drag & drop or open multiple images at once
+- Preview 10 different color quantization levels per file
 - Adjustable color count (2-247 colors)
-- Resize images by width while maintaining aspect ratio
+- Resize images by width while maintaining aspect ratio (default: 1200px)
 - Toggle dithering on/off
 - Toggle pixelated rendering
 - Real-time preview updates
 - Save individual optimized versions with one click
+- **Bulk download**: Select multiple output files and download them all at once
+- **Zoom mode**: Toggle between 100% size and fit-to-grid view
 
 ## Screenshots
 
