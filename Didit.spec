@@ -1,10 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
+# Build: pyinstaller Didit.spec
+# Bundles the pngquant binary from this folder; the app uses it before any
+# system-installed pngquant.
+import os
 
+if not os.access('pngquant', os.X_OK):
+    raise SystemExit("pngquant binary missing (or not executable) next to Didit.spec")
 
 a = Analysis(
-    ['pngquant_preview_app.py'],
+    ['didit.py'],
     pathex=[],
-    binaries=[],
+    binaries=[('pngquant', '.')],
     datas=[],
     hiddenimports=[],
     hookspath=[],
@@ -40,7 +46,7 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=True,
-    upx_exclude=[],
+    upx_exclude=['pngquant'],
     name='Didit',
 )
 app = BUNDLE(

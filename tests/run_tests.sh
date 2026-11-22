@@ -1,5 +1,5 @@
 #!/bin/bash
-# Quick test runner for PNG Quant Preview
+# Quick test runner for Didit
 #
 # Usage:
 #   ./tests/run_tests.sh              # Run basic tests
@@ -7,7 +7,7 @@
 #   ./tests/run_tests.sh --generate   # Generate actual output files
 #   ./tests/run_tests.sh --build --generate  # Both
 
-echo "Running PNG Quant Preview tests..."
+echo "Running Didit tests..."
 echo "=================================="
 echo ""
 

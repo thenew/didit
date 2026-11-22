@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test suite for PNG Quant Preview app.
+Test suite for Didit app.
 
 Tests:
 1. pngquant binary exists and is executable
@@ -144,19 +144,20 @@ os.chdir('{PROJECT_ROOT}')
 
 # Test import
 try:
-    import pngquant_preview_app
+    import didit
     print("PASS: Module imports successfully")
 except Exception as e:
     print(f"FAIL: Import error: {{e}}")
     sys.exit(1)
 
-# Test pngquant detection
-from pngquant_preview_app import find_pngquant
-path = find_pngquant('{PNGQUANT_PATH}')
-if path and os.path.isfile(path):
-    print(f"PASS: pngquant found at {{path}}")
+# Without --pngquant the app must pick the binary shipped in the project
+# folder, not a Homebrew/PATH one.
+from didit import find_pngquant
+path = find_pngquant()
+if path and os.path.realpath(path) == os.path.realpath('{PNGQUANT_PATH}'):
+    print(f"PASS: uses project pngquant at {{path}}")
 else:
-    print("FAIL: pngquant not found")
+    print(f"FAIL: expected {PNGQUANT_PATH}, got {{path}}")
     sys.exit(1)
 
 print("PASS: App module test passed")
@@ -182,6 +183,186 @@ print("PASS: App module test passed")
     except Exception as e:
         print(f"  FAIL: App test exception: {e}")
         return False
+
+
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def decode_png(data):
+    """Strictly decode a non-interlaced 8-bit-or-less PNG with the stdlib.
+
+    Returns (width, height, palette_len, rows of (r, g, b) tuples). Raises
+    ValueError on anything malformed: missing/misplaced signature, bad CRC,
+    trailing bytes, wrong IDAT size. This is what catches pngquant output
+    polluted by log text, which a magic-bytes check at offset 0 misses when
+    the log is prepended (or passes when the file was written via --output).
+    """
+    import struct
+    import zlib
+
+    if not data.startswith(PNG_SIGNATURE):
+        raise ValueError(f"no PNG signature at offset 0 (starts with {data[:16]!r})")
+    pos, chunks = 8, []
+    while pos < len(data):
+        if pos + 8 > len(data):
+            raise ValueError("truncated chunk header")
+        length, ctype = struct.unpack(">I4s", data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + length]
+        (crc,) = struct.unpack(">I", data[pos + 8 + length:pos + 12 + length])
+        if zlib.crc32(ctype + body) != crc:
+            raise ValueError(f"bad CRC in {ctype!r} chunk")
+        chunks.append((ctype, body))
+        pos += 12 + length
+        if ctype == b"IEND":
+            break
+    if pos != len(data):
+        raise ValueError(f"{len(data) - pos} trailing bytes after IEND")
+    if not chunks or chunks[0][0] != b"IHDR" or chunks[-1][0] != b"IEND":
+        raise ValueError("IHDR must be first and IEND last")
+
+    w, h, depth, ctype, _, _, interlace = struct.unpack(">IIBBBBB", chunks[0][1])
+    if interlace or depth > 8:
+        raise ValueError(f"unsupported PNG (depth={depth}, interlace={interlace})")
+    channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[ctype]
+    plte = b"".join(b for t, b in chunks if t == b"PLTE")
+    palette = [tuple(plte[i:i + 3]) for i in range(0, len(plte), 3)]
+    raw = zlib.decompress(b"".join(b for t, b in chunks if t == b"IDAT"))
+    stride = (w * channels * depth + 7) // 8
+    if len(raw) != h * (stride + 1):
+        raise ValueError(f"IDAT is {len(raw)} bytes, expected {h * (stride + 1)}")
+
+    bpp = max(1, channels * depth // 8)
+    prev, rows = bytearray(stride), []
+    for y in range(h):
+        f, line = raw[y * (stride + 1)], bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for i in range(stride):
+            a = line[i - bpp] if i >= bpp else 0
+            b = prev[i]
+            c = prev[i - bpp] if i >= bpp else 0
+            if f == 1:
+                line[i] = (line[i] + a) & 255
+            elif f == 2:
+                line[i] = (line[i] + b) & 255
+            elif f == 3:
+                line[i] = (line[i] + (a + b) // 2) & 255
+            elif f == 4:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+            elif f != 0:
+                raise ValueError(f"bad filter type {f}")
+        prev = line
+        if depth < 8:
+            per = 8 // depth
+            vals = [(line[x // per] >> (8 - depth * (x % per + 1))) & ((1 << depth) - 1) for x in range(w)]
+        else:
+            vals = list(line)
+        if ctype == 3:
+            rows.append([palette[v] for v in vals])
+        elif ctype in (0, 4):
+            rows.append([(v, v, v) for v in vals[::channels]])
+        else:
+            rows.append([tuple(vals[x * channels:x * channels + 3]) for x in range(w)])
+    return w, h, len(palette), rows
+
+
+def candidate_pngquants():
+    """Every pngquant the app could end up using, not just the project one.
+
+    The app's find_pngquant() falls back to Homebrew/PATH, and pngquant 2.x and
+    3.x behave differently, so the endpoint must be tested against each.
+    """
+    seen, out = set(), []
+    for c in [PNGQUANT_PATH, "/opt/homebrew/bin/pngquant", "/usr/local/bin/pngquant",
+              shutil.which("pngquant")]:
+        if c and os.path.isfile(c) and os.access(c, os.X_OK):
+            real = os.path.realpath(c)
+            if real not in seen:
+                seen.add(real)
+                out.append(c)
+    return out
+
+
+def test_app_quantize_endpoint():
+    """Run the app's real /prepare -> /quantize HTTP handlers and decode the result.
+
+    Fails if the bytes the UI receives are not a clean PNG, have more colors
+    than requested, the wrong size, or pixels far from the source.
+    """
+    print("\nTest 4: Testing app /quantize endpoint output...")
+
+    src_path = TEST_IMAGE
+    if not os.path.isfile(src_path):
+        print("  SKIP: no test image")
+        return True
+
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    sys.path.insert(0, PROJECT_ROOT)
+    try:
+        import didit as app
+    except Exception as e:
+        print(f"  FAIL: cannot import app: {e}")
+        return False
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+
+    def post(path, body):
+        req = urllib.request.Request(base + path, data=body, method="POST")
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return r.read()
+
+    ok = True
+    try:
+        with open(src_path, "rb") as fh:
+            original = fh.read()
+        ext = os.path.splitext(src_path)[1].lstrip(".")
+        # Small width keeps the pure-Python decode fast.
+        prepared = post(f"/prepare?width=200&ext={ext}", original)
+        sw, sh, _, src_rows = decode_png(prepared)
+
+        binaries = candidate_pngquants()
+        if not binaries:
+            print("  FAIL: no pngquant binary found")
+            return False
+        for binary in binaries:
+            app.PNGQUANT = binary
+            version = subprocess.run([binary, "--version"], capture_output=True, text=True).stdout.strip()
+            for colors, nofs, max_err in [(2, 0, 80), (8, 0, 30), (64, 0, 12), (64, 1, 12)]:
+                label = f"{binary} ({version}) colors={colors} nofs={nofs}"
+                try:
+                    out = post(f"/quantize?colors={colors}&nofs={nofs}", prepared)
+                    w, h, plte, rows = decode_png(out)
+                except Exception as e:
+                    print(f"  FAIL: {label}: {e}")
+                    ok = False
+                    continue
+                if (w, h) != (sw, sh):
+                    print(f"  FAIL: {label}: size {w}x{h}, expected {sw}x{sh}")
+                    ok = False
+                    continue
+                if plte == 0 or plte > colors:
+                    print(f"  FAIL: {label}: palette has {plte} colors, requested {colors}")
+                    ok = False
+                    continue
+                total = sum(abs(a - b) for r1, r2 in zip(src_rows, rows)
+                            for p1, p2 in zip(r1, r2) for a, b in zip(p1, p2))
+                err = total / (w * h * 3)
+                if err > max_err:
+                    print(f"  FAIL: {label}: mean pixel error {err:.1f} > {max_err}")
+                    ok = False
+                    continue
+                print(f"  PASS: {label}: {len(out):,} bytes, {plte} colors, mean err {err:.1f}")
+    except Exception as e:
+        print(f"  FAIL: endpoint exception: {e}")
+        ok = False
+    finally:
+        server.shutdown()
+    return ok
 
 
 def test_app_processing():
@@ -269,73 +450,58 @@ def test_app_processing():
 
 
 def test_app_build():
-    """Test that the app can be built."""
+    """Build the app with PyInstaller and check it ships the project's pngquant."""
     print("\nTest 3: Testing app build...")
-    
-    # Check if app is already built
-    if os.path.isdir(BUILD_DIR):
-        print(f"  INFO: App already built at {BUILD_DIR}")
-    else:
-        # Build the app
-        print("  Building app with py2app...")
-        try:
-            result = subprocess.run(
-                [sys.executable, "setup.py", "py2app", "-A"],
-                cwd=PROJECT_ROOT,
-                capture_output=True,
-                timeout=120,
-                text=True
-            )
-            
-            if result.returncode != 0:
-                print(f"  FAIL: Build failed with code {result.returncode}")
-                print(f"        stdout: {result.stdout}")
-                print(f"        stderr: {result.stderr}")
-                return False
-            
-            print("  PASS: App built successfully")
-            
-        except subprocess.TimeoutExpired:
-            print(f"  FAIL: Build timed out")
-            return False
-        except Exception as e:
-            print(f"  FAIL: Build exception: {e}")
-            return False
-    
-    # Verify the built app structure
-    macos_dir = os.path.join(BUILD_DIR, "Contents", "MacOS")
-    if not os.path.isdir(macos_dir):
-        print(f"  FAIL: MacOS directory not found in built app")
+    print("  Building app with PyInstaller...")
+    try:
+        result = subprocess.run(
+            [PYTHON_EXEC, "-m", "PyInstaller", "--noconfirm", "Didit.spec"],
+            cwd=PROJECT_ROOT, capture_output=True, timeout=600, text=True,
+        )
+    except Exception as e:
+        print(f"  FAIL: Build exception: {e}")
         return False
-    
-    # Find the executable
-    executables = [f for f in os.listdir(macos_dir) if os.path.isfile(os.path.join(macos_dir, f))]
-    app_exe = None
-    for exe in executables:
-        if exe.startswith("Didit") or exe.startswith("pngquant"):
-            app_exe = exe
-            break
-    
-    if not app_exe:
-        print(f"  FAIL: Executable not found in {macos_dir}")
-        print(f"        Available files: {executables}")
+    if result.returncode != 0:
+        print(f"  FAIL: Build failed with code {result.returncode}")
+        print(f"        stderr: {result.stderr[-2000:]}")
         return False
-    
-    print(f"  PASS: Built app verified (executable: {app_exe})")
-    
-    # Now test the module
+    print("  PASS: App built successfully")
+
+    exe = os.path.join(BUILD_DIR, "Contents", "MacOS", "Didit")
+    if not os.access(exe, os.X_OK):
+        print(f"  FAIL: executable not found at {exe}")
+        return False
+
+    bundled = [os.path.join(root, "pngquant") for root, _, names in os.walk(BUILD_DIR)
+               if "pngquant" in names]
+    if not bundled:
+        print("  FAIL: pngquant is not bundled in the app")
+        return False
+    # PyInstaller re-signs binaries on macOS, so compare behaviour, not bytes.
+    def version(path):
+        return subprocess.run([path, "--version"], capture_output=True, text=True, timeout=5).stdout.strip()
+    try:
+        got, want = version(bundled[0]), version(PNGQUANT_PATH)
+    except Exception as e:
+        print(f"  FAIL: bundled pngquant does not run: {e}")
+        return False
+    if got != want:
+        print(f"  FAIL: bundled pngquant is {got!r}, project one is {want!r}")
+        return False
+    print(f"  PASS: app bundles the project pngquant ({os.path.relpath(bundled[0], BUILD_DIR)})")
+
     return test_app_module()
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Test PNG Quant Preview app")
+    parser = argparse.ArgumentParser(description="Test Didit app")
     parser.add_argument("--build", action="store_true", help="Test built app")
     parser.add_argument("--generate", "-g", action="store_true", 
                         help="Generate actual output files for manual verification")
     args = parser.parse_args()
     
     print("=" * 60)
-    print("PNG Quant Preview - Test Suite")
+    print("Didit - Test Suite")
     print("=" * 60)
     
     results = []
@@ -353,7 +519,10 @@ def main():
         results.append(("app build", test_app_build()))
     else:
         results.append(("app module", test_app_module()))
-    
+
+    # Test 4: the bytes the UI actually receives from /quantize
+    results.append(("app /quantize output", test_app_quantize_endpoint()))
+
     # Summary
     print("\n" + "=" * 60)
     print("Test Summary")

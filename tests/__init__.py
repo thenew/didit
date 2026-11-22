@@ -1,1 +1,1 @@
-# Tests for PNG Quant Preview
+# Tests for Didit

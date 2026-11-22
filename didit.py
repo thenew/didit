@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Didit: native macOS window around the real pngquant binary.
 
-Dev run:   python3 pngquant_preview_app.py [--pngquant PATH]
-Packaged:  see setup.py (py2app) or the PyInstaller command in the notes.
+Dev run:   python3 didit.py [--pngquant PATH]
+Build:     pyinstaller Didit.spec   (bundles ./pngquant into the app)
 """
 import argparse, base64, os, re, shutil, subprocess, sys, tempfile, threading, json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -11,24 +11,20 @@ from urllib.parse import urlparse, parse_qs
 import webview
 
 SIPS = "/usr/bin/sips"  # built into macOS: converts to PNG and resizes by width
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 def find_pngquant(cli_path=None):
+    """Use the pngquant shipped with Didit (bundled in the app, or next to this
+    file in dev), only falling back to a system install if it is missing."""
     candidates = []
     if cli_path:
         candidates.append(os.path.expanduser(cli_path))
-    # Check local directories first (for development)
-    candidates.append(os.path.join(os.getcwd(), "pngquant"))
+    bundle_dir = getattr(sys, "_MEIPASS", None)  # PyInstaller bundle
+    if bundle_dir:
+        candidates.append(os.path.join(bundle_dir, "pngquant"))
     candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pngquant"))
-    # Check common system locations
     candidates += ["/opt/homebrew/bin/pngquant", "/usr/local/bin/pngquant"]
-    # Check bundled app resources
-    for base in (os.environ.get("RESOURCEPATH"), getattr(sys, "_MEIPASS", None)):
-        if base:
-            candidates.append(os.path.join(base, "pngquant"))
-    # Check user scripts
-    candidates.append(os.path.expanduser("~/scripts/pngquant"))
-    # Check PATH
     found = shutil.which("pngquant")
     if found:
         candidates.append(found)
@@ -74,10 +70,14 @@ button:hover, .button-like:hover{background:var(--accent);color:#fff;border-colo
 .card.selected{outline:2px solid var(--accent);background:rgba(0,122,255,0.1)}
 .card .im{min-height:120px;display:flex;align-items:center;justify-content:center;border-radius:4px;
   background:repeating-conic-gradient(var(--ck) 0 25%,transparent 0 50%) 0 0/16px 16px}
-.card.zoom .im{min-height:auto}
-.card.zoom img{max-width:100%;max-height:80vh;display:block}
 .card img{max-width:100%;display:block}
-.px .card img{image-rendering:pixelated}
+/* 100% size: one card per row, image at its natural size, scroll if wider */
+.card.zoom{grid-column:1/-1}
+.card.zoom .im{min-height:auto;overflow:auto;justify-content:flex-start}
+.card.zoom img{max-width:none;flex:none}
+#s{width:160px;vertical-align:middle;accent-color:var(--accent)}
+#sv{display:inline-block;min-width:64px;font-variant-numeric:tabular-nums}
+.file-status{padding:4px 0 12px}
 .cap{margin-top:6px;display:flex;justify-content:space-between;gap:8px;align-items:center}
 .mut{color:var(--mut)}
 .checkbox-wrapper{display:flex;align-items:center;gap:6px;cursor:pointer}
@@ -87,10 +87,9 @@ button:hover, .button-like:hover{background:var(--accent);color:#fff;border-colo
 .stats-bar{display:flex;gap:16px;align-items:center;margin-left:auto}
 </style>
 <header>
- <label>Colors from <input id=s type=number min=2 max=247 value=2> <span class=mut>(4 previews per file)</span></label>
+ <label>Colors <input id=s type=range min=2 max=253 value=2> <output id=sv for=s>2–5</output></label>
  <label>Width <input id=w type=number min=1 max=10000 value=1200> px</label>
  <label><input id=nd type=checkbox> no dither</label>
- <label><input id=px type=checkbox> pixelated</label>
  <button id="zoom-toggle" onclick="toggleZoom()">
    <span id="zoom-icon">🔍</span> <span id="zoom-text">100% Size</span>
  </button>
@@ -263,11 +262,16 @@ function renderFileList(){
       </div>
     `;
     
+    const status=document.createElement('div');
+    status.className='file-status mut';
+    status.id=`file-status-${fileIdx}`;
+
     const grid=document.createElement('div');
     grid.className='file-grid';
     grid.id=`file-grid-${fileIdx}`;
     
     section.appendChild(header);
+    section.appendChild(status);
     section.appendChild(grid);
     fileList.appendChild(section);
   });
@@ -276,27 +280,30 @@ function renderFileList(){
   files.forEach((file, fileIdx)=>{processFile(file, fileIdx);});
 }
 
+const runs={};  // latest run id per file, so stale results are dropped
 async function processFile(file, fileIdx){
   if(!file)return;
+  const run=runs[fileIdx]=(runs[fileIdx]||0)+1;
+  const stale=()=>runs[fileIdx]!==run;
   const grid=document.getElementById(`file-grid-${fileIdx}`);
-  grid.innerHTML='<div class="mut" style="padding:20px">Processing...</div>';
+  const status=document.getElementById(`file-status-${fileIdx}`);
+  grid.innerHTML='';
+  status.textContent='Processing…';
   
   const w=Math.max(0,parseInt($('w').value)||0);
-  const start=Math.max(2,Math.min(247,parseInt($('s').value)||2));
+  const start=Math.max(2,Math.min(253,parseInt($('s').value)||2));
   const ext=(file.name.split('.').pop()||'png').toLowerCase();
   const base=file.name.replace(/\\.[^.]+$/,'');
   const nd=$('nd').checked?1:0;
   
   const pr=await fetch('/prepare?'+new URLSearchParams({width:w,ext,fileIdx}),{method:'POST',body:file});
-  if(!pr.ok){grid.innerHTML=`<div class="mut" style="padding:20px">Error: ${await pr.text()}</div>`;return}
+  if(stale())return;
+  if(!pr.ok){status.textContent='Error: '+await pr.text();return}
   const src=await pr.blob();
   
   const bmp=await createImageBitmap(src);
-  const statEl=document.createElement('div');
-  statEl.className='mut';
-  statEl.style.margin='4px 0';
-  statEl.textContent=`Source ${bmp.width}×${bmp.height} · ${fmt(src.size)} (PNG, before quantizing)`;
-  grid.prepend(statEl);
+  if(stale()){bmp.close();return}
+  status.textContent=`Source ${bmp.width}×${bmp.height} · ${fmt(src.size)} (PNG, before quantizing)`;
   bmp.close();
 
   // Generate 4 previews instead of 10 (faster)
@@ -308,6 +315,7 @@ async function processFile(file, fileIdx){
     const im=card.querySelector('.im'),info=card.querySelector('.cap span');
     
     const res=await fetch('/quantize?'+new URLSearchParams({colors:n,nofs:nd,fileIdx}),{method:'POST',body:src});
+    if(stale())return;
     if(!res.ok){info.textContent='error';im.textContent=await res.text();return}
     const blob=await res.blob();
     const img=new Image();
@@ -319,8 +327,9 @@ async function processFile(file, fileIdx){
   }));
 }
 
-['s','w','nd'].forEach(i=>$(i).oninput=()=>{if(files.length>0){clearTimeout(timer);timer=setTimeout(()=>{files.forEach((f,idx)=>processFile(f,idx));},500)}});
-$('px').onchange=()=>document.body.classList.toggle('px',$('px').checked);
+const showRange=()=>{const v=parseInt($('s').value);$('sv').textContent=`${v}–${v+3}`};
+['s','w','nd'].forEach(i=>$(i).oninput=()=>{showRange();if(files.length>0){clearTimeout(timer);timer=setTimeout(()=>{files.forEach((f,idx)=>processFile(f,idx));},400)}});
+showRange();
 
 async function save(name,blob){
   if(window.pywebview&&pywebview.api){
@@ -382,7 +391,9 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/quantize":
             # Use the data sent from frontend (already processed PNG)
             colors = max(2, min(256, int(q.get("colors", ["32"])[0])))
-            cmd = [PNGQUANT, "-v", str(colors)]
+            # No -v: pngquant 3.x prints its verbose log to stdout when the
+            # output is stdout, which would be prepended to the PNG bytes.
+            cmd = [PNGQUANT, str(colors)]
             if q.get("nofs", ["0"])[0] == "1":
                 cmd.append("--nofs")
             cmd.append("-")  # stdin -> stdout
@@ -390,6 +401,8 @@ class Handler(BaseHTTPRequestHandler):
             if p.returncode != 0:
                 msg = p.stderr.decode(errors="replace") or f"pngquant exit {p.returncode}"
                 return self._send(500, msg.encode())
+            if not p.stdout.startswith(PNG_SIGNATURE):
+                return self._send(500, b"pngquant did not return a valid PNG")
             return self._send(200, p.stdout, "image/png")
 
         self._send(404, b"not found")
