@@ -1,0 +1,3 @@
+#!/bin/sh
+# Start Didit in dev mode with the project's virtualenv (which has pywebview).
+cd "$(dirname "$0")" && exec .venv/bin/python didit.py "$@"

@@ -12,13 +12,14 @@ Didit allows you to drag & drop multiple images, preview different compression l
 - Resize images by width while maintaining aspect ratio (default: 1200px)
 - Toggle dithering on/off
 - Real-time preview updates
-- Save individual optimized versions with one click
-- **Bulk download**: Select multiple output files and download them all at once
-- **Zoom mode**: Toggle between 100% (natural) size and fit-to-grid view
+- Click previews to select them (across all files)
+- **Save selected**: a sticky button writes every selected preview into a `didit/` folder next to its original image, no prompt (existing files are overwritten; `~/Downloads/didit` if the original's location is unknown)
+- **Zoom**: switch between Fit and Actual Size (100%) with the toolbar's segmented control
+- **macOS look and keyboard**: system colors, light/dark mode, your system accent color; ⌘O open, ⌘A select all, Esc deselect, ⌘S save, ⌘9 fit, ⌘0 actual size
 
 ## Screenshots
 
-The app displays your source image alongside 10 preview thumbnails showing different compression levels. Each preview shows the file size reduction and can be clicked to save that version.
+The app shows 4 previews per image, each with its file size and how much smaller it is than the source PNG. Click previews to select them, then save them from the bottom bar.
 
 ## Requirements
 
@@ -84,8 +85,8 @@ The tests will:
 For quick testing during development:
 
 ```bash
-# Run directly with Python
-python3 didit.py
+# Run with the project's virtualenv (it has pywebview installed)
+./run
 ```
 
 ### Building the Standalone App
@@ -101,6 +102,7 @@ The app is created at `dist/Didit.app`. `Didit.spec` bundles the `pngquant` bina
 ```
 .
 ├── didit.py                   # Main application code
+├── run                        # Dev launcher: runs didit.py with .venv
 ├── Didit.spec                 # PyInstaller build configuration
 ├── icon.icns                  # Application icon (macOS)
 ├── pngquant                   # pngquant binary, bundled into the app
@@ -120,7 +122,7 @@ The application:
 4. Converts the image to PNG using macOS's built-in `sips` tool
 5. Runs `pngquant` with different color settings to generate previews
 6. Displays all previews with their file sizes
-7. Lets you click any preview to save that version
+7. Lets you select previews and save them into a `didit/` folder beside the originals
 
 ## Customization
 
@@ -133,8 +135,8 @@ Edit the `PAGE` HTML template in `didit.py` and modify the JavaScript to generat
 Modify the default values in the HTML form (in the `PAGE` variable):
 
 - Default colors: Change the `value` attribute of `#s` input
-- Default width: Change the `placeholder` of `#w` input
-- Default dither/nofs: Modify the `checked` state of `#nd` checkbox
+- Default width: Change the `value` of `#w` input
+- Default dithering: Modify the `checked` state of `#dither` checkbox (unchecked = pngquant `--nofs`)
 
 ## Troubleshooting
 
